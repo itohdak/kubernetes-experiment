@@ -1,0 +1,7 @@
+apiVersion: stable.example.com/v1
+kind: FirstCrd
+metadata:
+  name: myfirstcr
+spec:
+    message: "Hello,crd!!"
+
