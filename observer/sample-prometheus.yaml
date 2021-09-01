@@ -1,0 +1,26 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  labels:
+    app: sample-prometheus
+  name: sample-prometheus
+spec:
+  template:
+    spec:
+      containers:
+      - image: itohdak/sample_prometheus
+        name: sample-prometheus
+        env:
+        - name: "LOCUST_HOST"
+          value: "locust-master-loadtestmanager-sample"
+        - name: "PROMETHEUS_HOST"
+          value: "prometheus.istio-system.svc.cluster.local"
+      nodeSelector:
+        app: "locust"
+      tolerations:
+      - key: "run"
+        operator: "Equal"
+        value: "locust"
+        effect: "NoSchedule"
+      restartPolicy: Never
+  backoffLimit: 3

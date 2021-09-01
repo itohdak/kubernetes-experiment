@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"net/url"
@@ -47,9 +48,9 @@ func HttpPost(target_url string, user_count, spawn_rate int) error {
 	return err
 }
 
-func getMetrics() bool {
+func getMetrics(prometheusAddress string) bool {
 	client, err := api.NewClient(api.Config{
-		Address: "http://localhost:9090",
+		Address: prometheusAddress,
 	})
 	if err != nil {
 		log.Printf("Error creating client: %v\n", err)
@@ -78,7 +79,20 @@ func getMetrics() bool {
 	// /api/v1/query_range
 	// query := "istio_requests_total{destination_app=\"frontend\",response_code=\"200\",source_app=\"istio-ingressgateway\",reporter=\"source\"}"
 	// query := "istio_request_duration_milliseconds_bucket{reporter=\"source\",destination_service=\"frontend.default.svc.cluster.local\",response_code=\"200\"}"
-	query := "(histogram_quantile(0.90, sum(irate(istio_request_duration_milliseconds_bucket{reporter=\"source\",destination_service=~\"frontend.default.svc.cluster.local\"}[1m])) by (le)) / 1000) or histogram_quantile(0.90, sum(irate(istio_request_duration_seconds_bucket{reporter=\"source\",destination_service=~\"frontend.default.svc.cluster.local\"}[1m])) by (le))"
+	query :=
+		`(
+		histogram_quantile(0.90,
+			sum(irate(istio_request_duration_milliseconds_bucket{
+				reporter="source",
+				destination_service=~"frontend.default.svc.cluster.local"
+				}[1m]
+		)) by (le)) / 1000) or
+		histogram_quantile(0.90,
+			sum(irate(istio_request_duration_seconds_bucket{
+				reporter="source",
+				destination_service=~"frontend.default.svc.cluster.local"
+				}[1m]
+		)) by (le))`
 	now := time.Now()
 	// range_param := v1.Range{Start: now.Add(-5 * time.Minute), End: now, Step: 5 * time.Second}
 	// result_query_range, warning, err := api.QueryRange(ctx, query, range_param)
@@ -96,7 +110,7 @@ func getMetrics() bool {
 	rep := regexp.MustCompile(`\s`)
 	result := rep.Split(result_query.String(), -1)
 	if result[2] == "NaN" {
-		log.Printf("One of the metrics get NaN. Is it loaded successfully?\n")
+		log.Printf("One of the metrics got NaN. Is it loaded successfully?\n")
 		return true
 	}
 	response_time, err := strconv.ParseFloat(result[2], 64)
@@ -109,31 +123,50 @@ func getMetrics() bool {
 	return ok
 }
 
+func getEnv(key, fallback string) string {
+	if value, ok := os.LookupEnv(key); ok {
+		return value
+	}
+	return fallback
+}
+
 func main() {
+
+	var (
+		locustHost    = getEnv("LOCUST_HOST", "localhost")
+		locustPort    = getEnv("LOCUST_PORT", "8089")
+		locustAddress = fmt.Sprintf("http://%s:%s", locustHost, locustPort)
+
+		prometheusHost    = getEnv("PROMETHEUS_HOST", "localhost")
+		prometheusPort    = getEnv("PROMETHEUS_PORT", "9090")
+		prometheusAddress = fmt.Sprintf("http://%s:%s", prometheusHost, prometheusPort)
+	)
 	log.SetFlags(log.Lmicroseconds)
 	ticker := time.NewTicker(time.Millisecond * 20000)
 	defer ticker.Stop()
+
+	locustSwamEndpoint := fmt.Sprintf("%s/swarm", locustAddress)
 	users := 0
-	HttpPost("http://localhost:8089/swarm", 0, 1)
+	HttpPost(locustSwamEndpoint, 0, 1)
 	log.Printf("Load test started. Users set to 0.\n")
 	for {
 		select {
 		case <-ticker.C:
 			users += 10
-			ret := getMetrics()
+			ret := getMetrics(prometheusAddress)
 			if !ret {
 				log.Printf("Metrics check failed. Stopping load test.\n")
-				HttpPost("http://localhost:8089/swarm", 0, 1)
+				HttpPost(locustSwamEndpoint, 0, 1)
 				os.Exit(0)
 			}
 			log.Printf("increase users to %d\n", users)
-			err := HttpPost("http://localhost:8089/swarm", users, 2)
+			err := HttpPost(locustSwamEndpoint, users, 2)
 			if err != nil {
 				log.Fatal(err)
 			}
 		}
 		if users >= 100 {
-			HttpPost("http://localhost:8089/swarm", 0, 1)
+			HttpPost(locustSwamEndpoint, 0, 1)
 			break
 		}
 	}
