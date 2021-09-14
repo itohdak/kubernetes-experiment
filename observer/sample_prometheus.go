@@ -140,9 +140,14 @@ func main() {
 		prometheusHost    = getEnv("PROMETHEUS_HOST", "localhost")
 		prometheusPort    = getEnv("PROMETHEUS_PORT", "9090")
 		prometheusAddress = fmt.Sprintf("http://%s:%s", prometheusHost, prometheusPort)
+
+		userIncreaseStep, _ = strconv.Atoi(getEnv("USER_INCREASE_STEP", "10"))
+		spawnDuration, _    = strconv.Atoi(getEnv("SPAWN_DURATION", "5"))
+		spawnRate           = userIncreaseStep / spawnDuration
+		loadDuration, _     = strconv.Atoi(getEnv("LOAD_DURATION", "30"))
 	)
 	log.SetFlags(log.Lmicroseconds)
-	ticker := time.NewTicker(time.Millisecond * 20000)
+	ticker := time.NewTicker(time.Second * time.Duration(loadDuration))
 	defer ticker.Stop()
 
 	locustSwamEndpoint := fmt.Sprintf("%s/swarm", locustAddress)
@@ -152,20 +157,20 @@ func main() {
 	for {
 		select {
 		case <-ticker.C:
-			users += 10
+			users += userIncreaseStep
 			ret := getMetrics(prometheusAddress)
 			if !ret {
 				log.Printf("Metrics check failed. Stopping load test.\n")
-				HttpPost(locustSwamEndpoint, 0, 1)
+				HttpPost(locustSwamEndpoint, 0, spawnRate)
 				os.Exit(0)
 			}
 			log.Printf("increase users to %d\n", users)
-			err := HttpPost(locustSwamEndpoint, users, 2)
+			err := HttpPost(locustSwamEndpoint, users, spawnRate)
 			if err != nil {
 				log.Fatal(err)
 			}
 		}
-		if users >= 100 {
+		if users >= userIncreaseStep*1000 {
 			HttpPost(locustSwamEndpoint, 0, 1)
 			break
 		}
