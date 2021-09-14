@@ -27,6 +27,15 @@ CLUSTER_NAME=onlineboutique
 
 # Tips (GKE)
 
+## before starting
+```
+gcloud init
+gcloud services enable container.googleapis.com
+```
+### ref
+- [gcloud install](https://cloud.google.com/sdk/docs/quickstart-linux?hl=ja)
+
+
 ## create GKE cluster
 ```
 gcloud container clusters create ${CLUSTER_NAME} \
@@ -34,7 +43,6 @@ gcloud container clusters create ${CLUSTER_NAME} \
     --node-locations ${ZONE}-a,${ZONE}-b \
     --machine-type=e2-standard-4 --num-nodes=2
 ```
-
 
 ## scale in / out
 ```
@@ -48,7 +56,6 @@ gcloud container clusters resize $CLUSTER_NAME --size 2 --zone $ZONE
 gcloud container clusters get-credentials ${CLUSTER_NAME} --zone ${ZONE}
 ```
 ### ref
-- [gcloud install](https://cloud.google.com/sdk/docs/quickstart-linux?hl=ja)
 - [enable kubectl](https://qiita.com/oguogura/items/c4f73dbcf0c73e25ec9a)
 
 
