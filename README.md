@@ -27,7 +27,7 @@ CLUSTER_NAME=onlineboutique
 
 # Tips (GKE)
 
-## before starting
+## before starting (enable access from local terminal)
 ```
 gcloud init
 gcloud services enable container.googleapis.com
@@ -44,6 +44,7 @@ gcloud container clusters create ${CLUSTER_NAME} \
     --machine-type=e2-standard-4 --num-nodes=2
 ```
 
+
 ## scale in / out
 ```
 gcloud container clusters resize $CLUSTER_NAME --size 0 --zone $ZONE
@@ -59,7 +60,7 @@ gcloud container clusters get-credentials ${CLUSTER_NAME} --zone ${ZONE}
 - [enable kubectl](https://qiita.com/oguogura/items/c4f73dbcf0c73e25ec9a)
 
 
-## install istio
+## deploy istio
 ```
 istioctl install --set profile=demo -y
 kubectl label namespace default istio-injection=enabled
@@ -67,11 +68,18 @@ kubectl label namespace default istio-injection=enabled
 ### if istioctl is not installed
 ```
 curl -L https://istio.io/downloadIstio | sh -
+# install specific version
+# curl -L https://istio.io/downloadIstio | ISTIO_VERSION=1.10.1 TARGET_ARCH=x86_64 sh -
+
 cd istio-1.10.1
 echo export PATH=$PWD/bin:'$PATH' >> ~/.bashrc
-exec bash
+exec bash # or exec $SHELL -l for mac
 ```
-
+then
+```
+which istioctl
+```
+will return your istio path.
 
 ## taint node for locust
 ```
@@ -97,6 +105,18 @@ echo "$INGRESS_HOST"
 You can now access the sample application on `http://$INGRESS_HOST`.
 
 ## Prometheus
+### along with istio (most easy for me)
+```
+cd $ISTIO_HOME/samples/addons/
+kubectl apply -f prometheus.yaml
+kubectl apply -f grafana.yaml
+```
+#### access prometheus/grafana via port-forwarding
+```
+kubectl -n istio-system port-forward svc/prometheus 9090:9090
+kubectl -n istio-system port-forward svc/grafana 3000:3000
+```
+
 ### without helm
 ```
 git clone https://github.com/prometheus-operator/kube-prometheus.git
@@ -131,7 +151,10 @@ helm -n monitoring install prometheus-operator prometheus-community/kube-prometh
 kubectl -n monitoring port-forward svc/prometheus-operator-kube-p-prometheus 9090:9090
 kubectl -n monitoring port-forward svc/prometheus-operator-grafana 3000:80
 ```
-user: admin, password: prom-operator
+|key|value|
+----|----
+|user|admin|
+|password|prom-operator|
 
 
 # locust
