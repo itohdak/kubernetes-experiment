@@ -16,6 +16,11 @@ import (
 	v1 "github.com/prometheus/client_golang/api/prometheus/v1"
 )
 
+var (
+	client  api.Client
+	promApi v1.API
+)
+
 func HttpPost(target_url string, user_count, spawn_rate int) error {
 	values := url.Values{}
 
@@ -48,78 +53,118 @@ func HttpPost(target_url string, user_count, spawn_rate int) error {
 	return err
 }
 
-func getMetrics(prometheusAddress string) bool {
-	client, err := api.NewClient(api.Config{
-		Address: prometheusAddress,
-	})
-	if err != nil {
-		log.Printf("Error creating client: %v\n", err)
-		os.Exit(1)
-	}
-	api := v1.NewAPI(client)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	// // /api/v1/targets
-	// // result, err := api.Targets(ctx)
-	// // if err != nil {
-	// //     log.Printf("Error get Targets: %v\n", err)
-	// //     os.Exit(1)
-	// // }
-	// // log.Printf("Result:\n%v\n", result)
-
-	// // /api/v1/target/metadata
-	// result_metric_metadata, err := api.TargetsMetadata(ctx, "{app=\"frontend\"}", "istio_request_duration_milliseconds", "")
-	// if err != nil {
-	// 	log.Printf("Error get target metadata: %v\n", err)
-	// 	os.Exit(1)
-	// }
-	// log.Printf("Result TargetsMetadata: \n%v\n", result_metric_metadata)
-
-	// /api/v1/query_range
-	// query := "istio_requests_total{destination_app=\"frontend\",response_code=\"200\",source_app=\"istio-ingressgateway\",reporter=\"source\"}"
-	// query := "istio_request_duration_milliseconds_bucket{reporter=\"source\",destination_service=\"frontend.default.svc.cluster.local\",response_code=\"200\"}"
-	query :=
-		`(
+var (
+	// Response Time (90%ile)
+	queryResponseTime = string(
+		`
 		histogram_quantile(0.90,
-			sum(irate(istio_request_duration_milliseconds_bucket{
+			sum(rate(istio_request_duration_milliseconds_bucket{
 				reporter="source",
 				destination_service=~"frontend.default.svc.cluster.local"
 				}[1m]
-		)) by (le)) / 1000) or
+			)) by (le)
+		) / 1000
+		or
 		histogram_quantile(0.90,
-			sum(irate(istio_request_duration_seconds_bucket{
+			sum(rate(istio_request_duration_seconds_bucket{
 				reporter="source",
 				destination_service=~"frontend.default.svc.cluster.local"
 				}[1m]
-		)) by (le))`
+			)) by (le)
+		)
+		`)
+	// Success Rate (non-5xx)
+	querySuccessRate = string(
+		`
+		sum(rate(istio_requests_total{
+			reporter=~"source",
+			destination_service=~"frontend.default.svc.cluster.local",
+			response_code!~"5.*"
+			}[1m]
+		))
+		/
+		sum(rate(istio_requests_total{
+			reporter=~"source",
+			destination_service=~"frontend.default.svc.cluster.local"
+			}[1m]
+		))
+		* 100
+		`)
+	// CPU Utilization
+	queryCPUUtilization = string(
+		`
+		sum(rate(container_cpu_usage_seconds_total{
+			pod=~"frontend.*"
+			}[5m]))
+		/
+		sum(container_spec_cpu_quota{
+			pod=~"frontend.*"
+			} /
+			container_spec_cpu_period{
+			pod=~"frontend.*"
+			})
+		* 100
+		`)
+)
+
+func execPromQL(ctx context.Context, queryString string) (float64, error) {
 	now := time.Now()
-	// range_param := v1.Range{Start: now.Add(-5 * time.Minute), End: now, Step: 5 * time.Second}
-	// result_query_range, warning, err := api.QueryRange(ctx, query, range_param)
-	result_query, warning, err := api.Query(ctx, query, now)
+	query_result, warning, err := promApi.Query(ctx, queryString, now)
 	if err != nil {
 		log.Printf("Error while querying prometheus: %v\n", err)
-		os.Exit(1)
+		return -1, err
 	}
 	if len(warning) > 0 {
-		log.Printf("Warning QueryRange: %v\n", warning)
+		log.Printf("PromQL warning: %v\n", warning)
 	}
-	// log.Printf("Result QueryRange: \n%v\n", result_query_range)
-	// log.Printf("response time (90 percentile): %v\n", result_query)
-	// {} => xxx @[xxx.xxx]
+	// response format might be "{} => xxx @[xxx.xxx]"
 	rep := regexp.MustCompile(`\s`)
-	result := rep.Split(result_query.String(), -1)
+	result := rep.Split(query_result.String(), -1)
 	if result[2] == "NaN" {
 		log.Printf("One of the metrics got NaN. Is it loaded successfully?\n")
-		return true
+		return -1, nil
 	}
-	response_time, err := strconv.ParseFloat(result[2], 64)
+	value, err := strconv.ParseFloat(result[2], 64)
 	if err != nil {
 		log.Printf("Error while converting string to float: %v\n", err)
-		os.Exit(1)
+		return -1, err
 	}
-	log.Printf("response time (90 percentile): %f\n", response_time)
-	ok := response_time <= 2.00
+	return value, nil
+}
+
+func checkMetrics(prometheusAddress string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var (
+		err            error
+		responseTime   float64
+		successRate    float64
+		cpuUtilization float64
+		ok             = true
+	)
+	if responseTime, err = execPromQL(ctx, queryResponseTime); err != nil {
+		log.Fatalln("execPromQL failed")
+	} else if responseTime > 2.00 {
+		log.Printf("Response time check failed: %8.2f sec\n", responseTime)
+		ok = false
+	}
+	if successRate, err = execPromQL(ctx, querySuccessRate); err != nil {
+		log.Fatalln("execPromQL failed")
+	} else if successRate >= 0 && successRate < 99.9 {
+		log.Printf("Success rate check failed: %8.2f %\n", successRate)
+		ok = false
+	}
+	if cpuUtilization, err = execPromQL(ctx, queryCPUUtilization); err != nil {
+		log.Fatalln("execPromQL failed")
+	} else if cpuUtilization > 80 {
+		log.Printf("CPU utilization check failed: %8.2f %\n", cpuUtilization)
+		ok = false
+	}
+	log.Printf(`
+Response time (90 percentile): %8.2f
+Success rate (non 5xx errors): %8.2f
+CPU utilization              : %8.2f
+`, responseTime, successRate, cpuUtilization)
 	return ok
 }
 
@@ -147,6 +192,17 @@ func main() {
 		loadDuration, _     = strconv.Atoi(getEnv("LOAD_DURATION", "30"))
 	)
 	log.SetFlags(log.Lmicroseconds)
+
+	// Prepare for Prometheus API
+	client, err := api.NewClient(api.Config{
+		Address: prometheusAddress,
+	})
+	if err != nil {
+		log.Printf("Error creating client: %v\n", err)
+		os.Exit(1)
+	}
+	promApi = v1.NewAPI(client)
+
 	ticker := time.NewTicker(time.Second * time.Duration(loadDuration))
 	defer ticker.Stop()
 
@@ -158,15 +214,13 @@ func main() {
 		select {
 		case <-ticker.C:
 			users += userIncreaseStep
-			ret := getMetrics(prometheusAddress)
-			if !ret {
+			if ret := checkMetrics(prometheusAddress); !ret {
 				log.Printf("Metrics check failed. Stopping load test.\n")
 				HttpPost(locustSwamEndpoint, 0, spawnRate)
 				os.Exit(0)
 			}
 			log.Printf("increase users to %d\n", users)
-			err := HttpPost(locustSwamEndpoint, users, spawnRate)
-			if err != nil {
+			if err := HttpPost(locustSwamEndpoint, users, spawnRate); err != nil {
 				log.Fatal(err)
 			}
 		}
